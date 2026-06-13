@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.5.2
+// @version      0.6.0
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -17,8 +17,9 @@
   const STORAGE_KEY = 'recallx-data';
   const SYNC_STATE_KEY = 'recallx-bulk-sync-state';
   const ACCOUNT_HANDLE_KEY = 'recallx-account-handle';
-  const MAX_SYNC_SCROLLS = 20;
-  const SYNC_SCROLL_DELAY = 800;
+  const MAX_SYNC_SCROLLS = 80;
+  const SYNC_SCROLL_DELAY = 2_000;
+  const MAX_NO_NEW_RECORDS_ROUNDS = 8;
   const SYSTEM_PATHS = new Set([
     'home',
     'explore',
@@ -555,7 +556,6 @@
           const record = parseXUrl(link.href);
           if (record?.type === 'tweet') {
             records.set(record.url, record);
-            break;
           }
         }
       }
@@ -575,33 +575,109 @@
     }
   }
 
-  async function scanBulkSyncPage(step) {
-    const records = new Map();
-    let stableRounds = 0;
-    let previousHeight = 0;
+  function mergeCollection(existingCollection, scannedCollection) {
+    const existing =
+      existingCollection &&
+      typeof existingCollection === 'object' &&
+      !Array.isArray(existingCollection)
+        ? existingCollection
+        : {};
+    const scanned =
+      scannedCollection &&
+      typeof scannedCollection === 'object' &&
+      !Array.isArray(scannedCollection)
+        ? scannedCollection
+        : {};
+    const collection = { ...existing };
+    const beforeCount = Object.keys(existing).length;
+    const scannedCount = Object.keys(scanned).length;
+    let addedCount = 0;
+    const earlierTimestamp = (first, second) => {
+      if (!first) {
+        return second || now();
+      }
+      if (!second) {
+        return first;
+      }
+      const firstTime = Date.parse(first);
+      const secondTime = Date.parse(second);
+      if (Number.isNaN(firstTime) || Number.isNaN(secondTime)) {
+        return first;
+      }
+      return firstTime <= secondTime ? first : second;
+    };
 
-    await sleep(1_500);
-    for (let round = 0; round <= MAX_SYNC_SCROLLS; round += 1) {
-      collectBulkRecords(step.recordType, records);
-
-      const currentHeight = document.documentElement.scrollHeight;
-      stableRounds =
-        currentHeight === previousHeight ? stableRounds + 1 : 0;
-      previousHeight = currentHeight;
-      if (stableRounds >= 3 || round === MAX_SYNC_SCROLLS) {
-        break;
+    for (const [url, scannedRecord] of Object.entries(scanned)) {
+      const existingRecord = collection[url];
+      if (!existingRecord) {
+        collection[url] = {
+          ...scannedRecord,
+          lastSeenAt: scannedRecord.lastSeenAt || scannedRecord.savedAt || now(),
+          sourceLastSeen: 'bulk-sync',
+        };
+        addedCount += 1;
+        continue;
       }
 
-      window.scrollTo({
-        top: currentHeight,
-        behavior: 'auto',
-      });
-      setStatus(
-        `正在更新${step.label}：已识别 ${records.size} 条（${round + 1}/${MAX_SYNC_SCROLLS}）`,
-      );
-      await sleep(SYNC_SCROLL_DELAY);
+      collection[url] = {
+        ...existingRecord,
+        ...scannedRecord,
+        savedAt: earlierTimestamp(
+          existingRecord.savedAt,
+          scannedRecord.savedAt,
+        ),
+        source: existingRecord.source || scannedRecord.source || 'bulk-sync',
+        lastSeenAt: scannedRecord.lastSeenAt || scannedRecord.savedAt || now(),
+        sourceLastSeen: 'bulk-sync',
+      };
     }
 
+    return {
+      collection,
+      beforeCount,
+      scannedCount,
+      addedCount,
+      keptCount: beforeCount,
+      afterCount: Object.keys(collection).length,
+    };
+  }
+
+  async function scanBulkSyncPage(step) {
+    const records = new Map();
+    let noNewRecordsRounds = 0;
+    const stepSize = Math.max(500, Math.floor(window.innerHeight * 0.75));
+
+    await sleep(SYNC_SCROLL_DELAY);
+    for (let round = 1; round <= MAX_SYNC_SCROLLS; round += 1) {
+      collectBulkRecords(step.recordType, records);
+      const beforeScrollCount = records.size;
+      window.scrollBy({
+        top: stepSize,
+        behavior: 'auto',
+      });
+      await sleep(SYNC_SCROLL_DELAY);
+      collectBulkRecords(step.recordType, records);
+
+      const addedThisRound = records.size - beforeScrollCount;
+      noNewRecordsRounds =
+        addedThisRound === 0 ? noNewRecordsRounds + 1 : 0;
+      const scrollHeight = document.documentElement.scrollHeight;
+      const nearBottom =
+        window.scrollY + window.innerHeight >= scrollHeight - 200;
+
+      console.info(
+        `[RECALLX] bulk-sync ${step.label} round=${round}, count=${records.size}, added=${addedThisRound}, scrollY=${Math.round(window.scrollY)}, scrollHeight=${scrollHeight}, nearBottom=${nearBottom}, noNewRecordsRounds=${noNewRecordsRounds}`,
+      );
+      setStatus(
+        `正在更新${step.label}：已识别 ${records.size} 条，本轮新增 ${addedThisRound} 条，滚动 ${round}/${MAX_SYNC_SCROLLS}`,
+      );
+
+      if (nearBottom && noNewRecordsRounds >= MAX_NO_NEW_RECORDS_ROUNDS) {
+        break;
+      }
+    }
+
+    collectBulkRecords(step.recordType, records);
     const savedAt = now();
     const collection = {};
     for (const record of records.values()) {
@@ -609,6 +685,8 @@
         ...record,
         savedAt,
         source: 'bulk-sync',
+        lastSeenAt: savedAt,
+        sourceLastSeen: 'bulk-sync',
       };
     }
     return collection;
@@ -639,9 +717,16 @@
     setStatus(`正在批量更新${step.label}，请勿关闭页面…`);
     const collection = await scanBulkSyncPage(step);
     const data = loadData();
-    data[step.collection] = collection;
+    const mergeResult = mergeCollection(data[step.collection], collection);
+    data[step.collection] = mergeResult.collection;
     data.updatedAt = now();
     saveData(data);
+    setStatus(
+      `${step.label}更新完成：本次识别 ${mergeResult.scannedCount}，新增 ${mergeResult.addedCount}，合并后 ${mergeResult.afterCount}。`,
+    );
+    console.info(
+      `[RECALLX] bulk-sync ${step.label} merged before=${mergeResult.beforeCount}, scanned=${mergeResult.scannedCount}, added=${mergeResult.addedCount}, kept=${mergeResult.keptCount}, after=${mergeResult.afterCount}`,
+    );
 
     const nextStep = state.step + 1;
     if (nextStep >= steps.length) {
@@ -657,6 +742,7 @@
       ...state,
       step: nextStep,
     });
+    await sleep(1_000);
     window.location.assign(`https://x.com${steps[nextStep].path}`);
   }
 
@@ -671,7 +757,8 @@
     const confirmed = window.confirm(
       [
         '一键更新会依次打开书签、喜欢和关注页面。',
-        '每个分类会使用本次扫描结果替换本地旧记录，可能覆盖或删除以前保存的数据。',
+        '本次扫描结果会与本地旧记录合并，不会删除以前保存的数据。',
+        'X 的虚拟列表仍可能导致本次扫描不完整，可稍后再次更新补充。',
         `当前账号：@${handle}`,
         '是否继续？',
       ].join('\n'),

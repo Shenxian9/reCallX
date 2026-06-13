@@ -24,9 +24,8 @@
 9. 浮窗提供账号输入和“一键更新”：
    - 自动识别当前账号 handle，失败时允许用户手动输入；
    - 依次访问 `/i/bookmarks`、`/{handle}/likes`、`/{handle}/following`；
-   - 每页只执行最多 20 次有限滚动；
-   - 用本次结果替换对应本地集合；
-   - 启动前明确确认可能覆盖或删除旧记录。
+   - 每页只执行最多 80 次有限小步滚动；
+   - 将本次结果合并到对应本地集合，不删除旧记录。
 
 ## 已删除功能
 
@@ -82,9 +81,13 @@ URL 识别只用于确定交互所对应的账号或推文，不用于普通 URL
 - bookmarks/likes 从 `article a[href*="/status/"]` 识别推文。
 - following 从 `[data-testid="UserCell"] a[href]` 识别账号主页。
 - 使用持久化同步状态跨页面依次完成三个步骤。
-- 每轮滚动后收集当前 DOM，最多滚动 20 次；页面高度连续三轮不变时提前停止。
-- 每个分类完成后整体替换对应集合，记录来源为 `bulk-sync`。
-- 页面加载不完整可能导致旧记录被删除，因此启动前必须展示覆盖确认。
+- 每轮滚动前后都收集当前 DOM，每次滚动约视口高度的 75%，等待 2 秒。
+- 最多滚动 80 次；接近页面底部且连续 8 轮没有新增记录时提前停止。
+- tweet bulk-sync 收集 article 内所有合法 status URL，由 Map 去重。
+- 每个分类完成后与旧集合合并，记录来源为 `bulk-sync`，不得删除未扫描到的旧记录。
+- 已存在 URL 保留原 `savedAt` 和 `source`，更新 `lastSeenAt` 和
+  `sourceLastSeen: "bulk-sync"`。
+- 每轮输出数量、新增数、滚动位置、页面高度、底部状态和连续无新增轮数日志。
 - 同步期间不得自动点击点赞、书签、关注或其他账号操作按钮。
 
 ## 本地存储规则
@@ -97,6 +100,7 @@ URL 识别只用于确定交互所对应的账号或推文，不用于普通 URL
 - 取消操作删除对应集合中的记录并更新 `updatedAt`。
 - 读取旧 version 1 数据时，只迁移 likes、bookmarks、follows；丢弃 profiles/tweets。
 - 批量更新记录使用 `source: "bulk-sync"`。
+- bulk-sync 合并模式不得降低集合数量。
 - JSON 文件名为 `recallx-backup-YYYY-MM-DD.json`。
 
 ## 统计详情要求

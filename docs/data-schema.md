@@ -57,7 +57,12 @@ version 2 不包含 `profiles` 和 `tweets` 普通备份集合。
 5. remove bookmark 删除 bookmarks 记录。
 6. unfollow 删除 follows 记录。
 7. 新增或删除成功时更新 `updatedAt`。
-8. 批量更新会整体替换单个集合，采集记录的 `source` 为 `bulk-sync`。
+8. 批量更新将扫描结果与旧集合合并，不删除本次未扫描到的旧记录。
+9. 已存在 URL 保留原 `savedAt` 和 `source`，更新：
+   - `lastSeenAt`：本次 bulk-sync 看到该 URL 的时间；
+   - `sourceLastSeen`：固定为 `bulk-sync`。
+10. 新增 bulk-sync 记录同时写入 `savedAt`、`source`、`lastSeenAt` 和
+    `sourceLastSeen`。
 
 `source` 可取：
 
