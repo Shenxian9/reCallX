@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.6.0
+// @version      0.7.0
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -20,6 +20,7 @@
   const MAX_SYNC_SCROLLS = 80;
   const SYNC_SCROLL_DELAY = 2_000;
   const MAX_NO_NEW_RECORDS_ROUNDS = 8;
+  const MAX_BOTTOM_SEEK_STABLE_ROUNDS = 3;
   const SYSTEM_PATHS = new Set([
     'home',
     'explore',
@@ -533,18 +534,21 @@
         label: '书签',
         path: '/i/bookmarks',
         recordType: 'tweet',
+        scanDirection: 'bottom-up',
       },
       {
         collection: 'likes',
         label: '喜欢',
         path: `/${handle}/likes`,
         recordType: 'tweet',
+        scanDirection: 'bottom-up',
       },
       {
         collection: 'follows',
         label: '关注',
         path: `/${handle}/following`,
         recordType: 'profile',
+        scanDirection: 'top-down',
       },
     ];
   }
@@ -648,11 +652,49 @@
     const stepSize = Math.max(500, Math.floor(window.innerHeight * 0.75));
 
     await sleep(SYNC_SCROLL_DELAY);
+    if (step.scanDirection === 'bottom-up') {
+      let stableBottomRounds = 0;
+      let previousHeight = 0;
+      let previousScrollY = -1;
+
+      for (let round = 1; round <= MAX_SYNC_SCROLLS; round += 1) {
+        const scrollHeight = document.documentElement.scrollHeight;
+        window.scrollTo({
+          top: scrollHeight,
+          behavior: 'auto',
+        });
+        await sleep(SYNC_SCROLL_DELAY);
+
+        const currentHeight = document.documentElement.scrollHeight;
+        const currentScrollY = Math.round(window.scrollY);
+        const nearBottom =
+          currentScrollY + window.innerHeight >= currentHeight - 200;
+        const bottomStable =
+          nearBottom &&
+          currentHeight === previousHeight &&
+          currentScrollY === previousScrollY;
+        stableBottomRounds = bottomStable ? stableBottomRounds + 1 : 0;
+        previousHeight = currentHeight;
+        previousScrollY = currentScrollY;
+
+        console.info(
+          `[RECALLX] bulk-sync ${step.label} phase=seek-bottom, round=${round}, scrollY=${currentScrollY}, scrollHeight=${currentHeight}, nearBottom=${nearBottom}, stableBottomRounds=${stableBottomRounds}`,
+        );
+        setStatus(
+          `正在定位${step.label}底部：${round}/${MAX_SYNC_SCROLLS}，稳定 ${stableBottomRounds}/${MAX_BOTTOM_SEEK_STABLE_ROUNDS}`,
+        );
+
+        if (stableBottomRounds >= MAX_BOTTOM_SEEK_STABLE_ROUNDS) {
+          break;
+        }
+      }
+    }
+
     for (let round = 1; round <= MAX_SYNC_SCROLLS; round += 1) {
       collectBulkRecords(step.recordType, records);
       const beforeScrollCount = records.size;
       window.scrollBy({
-        top: stepSize,
+        top: step.scanDirection === 'bottom-up' ? -stepSize : stepSize,
         behavior: 'auto',
       });
       await sleep(SYNC_SCROLL_DELAY);
@@ -664,15 +706,18 @@
       const scrollHeight = document.documentElement.scrollHeight;
       const nearBottom =
         window.scrollY + window.innerHeight >= scrollHeight - 200;
+      const nearTop = window.scrollY <= 200;
+      const reachedEdge =
+        step.scanDirection === 'bottom-up' ? nearTop : nearBottom;
 
       console.info(
-        `[RECALLX] bulk-sync ${step.label} round=${round}, count=${records.size}, added=${addedThisRound}, scrollY=${Math.round(window.scrollY)}, scrollHeight=${scrollHeight}, nearBottom=${nearBottom}, noNewRecordsRounds=${noNewRecordsRounds}`,
+        `[RECALLX] bulk-sync ${step.label} direction=${step.scanDirection}, round=${round}, count=${records.size}, added=${addedThisRound}, scrollY=${Math.round(window.scrollY)}, scrollHeight=${scrollHeight}, nearTop=${nearTop}, nearBottom=${nearBottom}, noNewRecordsRounds=${noNewRecordsRounds}`,
       );
       setStatus(
-        `正在更新${step.label}：已识别 ${records.size} 条，本轮新增 ${addedThisRound} 条，滚动 ${round}/${MAX_SYNC_SCROLLS}`,
+        `正在${step.scanDirection === 'bottom-up' ? '向上' : '向下'}更新${step.label}：已识别 ${records.size} 条，本轮新增 ${addedThisRound} 条，滚动 ${round}/${MAX_SYNC_SCROLLS}`,
       );
 
-      if (nearBottom && noNewRecordsRounds >= MAX_NO_NEW_RECORDS_ROUNDS) {
+      if (reachedEdge && noNewRecordsRounds >= MAX_NO_NEW_RECORDS_ROUNDS) {
         break;
       }
     }
