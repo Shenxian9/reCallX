@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.7.0
+// @version      0.8.0
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -17,10 +17,10 @@
   const STORAGE_KEY = 'recallx-data';
   const SYNC_STATE_KEY = 'recallx-bulk-sync-state';
   const ACCOUNT_HANDLE_KEY = 'recallx-account-handle';
-  const MAX_SYNC_SCROLLS = 80;
   const SYNC_SCROLL_DELAY = 2_000;
   const MAX_NO_NEW_RECORDS_ROUNDS = 8;
   const MAX_BOTTOM_SEEK_STABLE_ROUNDS = 3;
+  const MAX_SYNC_PHASE_DURATION_MS = 30 * 60 * 1_000;
   const SYSTEM_PATHS = new Set([
     'home',
     'explore',
@@ -548,7 +548,7 @@
         label: '关注',
         path: `/${handle}/following`,
         recordType: 'profile',
-        scanDirection: 'top-down',
+        scanDirection: 'bottom-up',
       },
     ];
   }
@@ -569,12 +569,13 @@
     for (const userCell of document.querySelectorAll(
       '[data-testid="UserCell"]',
     )) {
-      for (const link of userCell.querySelectorAll('a[href]')) {
-        const record = parseXUrl(link.href);
-        if (record?.type === 'profile') {
-          records.set(record.url, record);
-          break;
-        }
+      if (isInSidebar(userCell)) {
+        continue;
+      }
+
+      const record = findProfileRecordInSingleUserCell(userCell);
+      if (record) {
+        records.set(record.url, record);
       }
     }
   }
@@ -656,8 +657,11 @@
       let stableBottomRounds = 0;
       let previousHeight = 0;
       let previousScrollY = -1;
+      let round = 0;
+      const phaseStartedAt = Date.now();
 
-      for (let round = 1; round <= MAX_SYNC_SCROLLS; round += 1) {
+      while (Date.now() - phaseStartedAt < MAX_SYNC_PHASE_DURATION_MS) {
+        round += 1;
         const scrollHeight = document.documentElement.scrollHeight;
         window.scrollTo({
           top: scrollHeight,
@@ -681,7 +685,7 @@
           `[RECALLX] bulk-sync ${step.label} phase=seek-bottom, round=${round}, scrollY=${currentScrollY}, scrollHeight=${currentHeight}, nearBottom=${nearBottom}, stableBottomRounds=${stableBottomRounds}`,
         );
         setStatus(
-          `正在定位${step.label}底部：${round}/${MAX_SYNC_SCROLLS}，稳定 ${stableBottomRounds}/${MAX_BOTTOM_SEEK_STABLE_ROUNDS}`,
+          `正在定位${step.label}底部：第 ${round} 轮，稳定 ${stableBottomRounds}/${MAX_BOTTOM_SEEK_STABLE_ROUNDS}`,
         );
 
         if (stableBottomRounds >= MAX_BOTTOM_SEEK_STABLE_ROUNDS) {
@@ -690,7 +694,10 @@
       }
     }
 
-    for (let round = 1; round <= MAX_SYNC_SCROLLS; round += 1) {
+    let round = 0;
+    const collectionStartedAt = Date.now();
+    while (Date.now() - collectionStartedAt < MAX_SYNC_PHASE_DURATION_MS) {
+      round += 1;
       collectBulkRecords(step.recordType, records);
       const beforeScrollCount = records.size;
       window.scrollBy({
@@ -714,7 +721,7 @@
         `[RECALLX] bulk-sync ${step.label} direction=${step.scanDirection}, round=${round}, count=${records.size}, added=${addedThisRound}, scrollY=${Math.round(window.scrollY)}, scrollHeight=${scrollHeight}, nearTop=${nearTop}, nearBottom=${nearBottom}, noNewRecordsRounds=${noNewRecordsRounds}`,
       );
       setStatus(
-        `正在${step.scanDirection === 'bottom-up' ? '向上' : '向下'}更新${step.label}：已识别 ${records.size} 条，本轮新增 ${addedThisRound} 条，滚动 ${round}/${MAX_SYNC_SCROLLS}`,
+        `正在向上更新${step.label}：已识别 ${records.size} 条，本轮新增 ${addedThisRound} 条，第 ${round} 轮`,
       );
 
       if (reachedEdge && noNewRecordsRounds >= MAX_NO_NEW_RECORDS_ROUNDS) {
