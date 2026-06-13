@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.4.0
+// @version      0.5.0
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -15,6 +15,10 @@
   'use strict';
 
   const STORAGE_KEY = 'recallx-data';
+  const SYNC_STATE_KEY = 'recallx-bulk-sync-state';
+  const ACCOUNT_HANDLE_KEY = 'recallx-account-handle';
+  const MAX_SYNC_SCROLLS = 20;
+  const SYNC_SCROLL_DELAY = 800;
   const SYSTEM_PATHS = new Set([
     'home',
     'explore',
@@ -36,6 +40,7 @@
   let statsContentElement = null;
   let statsCloseButton = null;
   let statsTriggerButton = null;
+  let accountHandleInput = null;
 
   function now() {
     const offsetMilliseconds = 8 * 60 * 60 * 1000;
@@ -410,6 +415,215 @@
     document.addEventListener('click', handleDocumentClick, true);
   }
 
+  function sleep(milliseconds) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, milliseconds);
+    });
+  }
+
+  function detectAccountHandle() {
+    const candidates = [
+      accountHandleInput?.value,
+      GM_getValue(ACCOUNT_HANDLE_KEY, ''),
+      document.querySelector('a[data-testid="AppTabBar_Profile_Link"]')?.href,
+      window.location.href,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string' || !candidate.trim()) {
+        continue;
+      }
+
+      const directHandle = candidate.trim().replace(/^@/, '');
+      if (
+        HANDLE_PATTERN.test(directHandle) &&
+        !SYSTEM_PATHS.has(directHandle.toLowerCase())
+      ) {
+        return directHandle;
+      }
+
+      const normalized = normalizeUrl(candidate);
+      if (!normalized) {
+        continue;
+      }
+      const parts = new URL(normalized).pathname.split('/').filter(Boolean);
+      if (
+        parts.length >= 1 &&
+        HANDLE_PATTERN.test(parts[0]) &&
+        !SYSTEM_PATHS.has(parts[0].toLowerCase())
+      ) {
+        return parts[0];
+      }
+    }
+
+    return null;
+  }
+
+  function getBulkSyncSteps(handle) {
+    return [
+      {
+        collection: 'bookmarks',
+        label: '书签',
+        path: '/i/bookmarks',
+        recordType: 'tweet',
+      },
+      {
+        collection: 'likes',
+        label: '喜欢',
+        path: `/${handle}/likes`,
+        recordType: 'tweet',
+      },
+      {
+        collection: 'follows',
+        label: '关注',
+        path: `/${handle}/following`,
+        recordType: 'profile',
+      },
+    ];
+  }
+
+  function collectBulkRecords(recordType, records) {
+    if (recordType === 'tweet') {
+      for (const article of document.querySelectorAll('article')) {
+        for (const link of article.querySelectorAll('a[href*="/status/"]')) {
+          const record = parseXUrl(link.href);
+          if (record?.type === 'tweet') {
+            records.set(record.url, record);
+            break;
+          }
+        }
+      }
+      return;
+    }
+
+    for (const userCell of document.querySelectorAll(
+      '[data-testid="UserCell"]',
+    )) {
+      for (const link of userCell.querySelectorAll('a[href]')) {
+        const record = parseXUrl(link.href);
+        if (record?.type === 'profile') {
+          records.set(record.url, record);
+          break;
+        }
+      }
+    }
+  }
+
+  async function scanBulkSyncPage(step) {
+    const records = new Map();
+    let stableRounds = 0;
+    let previousHeight = 0;
+
+    await sleep(1_500);
+    for (let round = 0; round <= MAX_SYNC_SCROLLS; round += 1) {
+      collectBulkRecords(step.recordType, records);
+
+      const currentHeight = document.documentElement.scrollHeight;
+      stableRounds =
+        currentHeight === previousHeight ? stableRounds + 1 : 0;
+      previousHeight = currentHeight;
+      if (stableRounds >= 3 || round === MAX_SYNC_SCROLLS) {
+        break;
+      }
+
+      window.scrollTo({
+        top: currentHeight,
+        behavior: 'auto',
+      });
+      setStatus(
+        `正在更新${step.label}：已识别 ${records.size} 条（${round + 1}/${MAX_SYNC_SCROLLS}）`,
+      );
+      await sleep(SYNC_SCROLL_DELAY);
+    }
+
+    const savedAt = now();
+    const collection = {};
+    for (const record of records.values()) {
+      collection[record.url] = {
+        ...record,
+        savedAt,
+        source: 'bulk-sync',
+      };
+    }
+    return collection;
+  }
+
+  async function resumeBulkSync() {
+    const state = GM_getValue(SYNC_STATE_KEY, null);
+    if (
+      !state ||
+      typeof state !== 'object' ||
+      !HANDLE_PATTERN.test(state.handle || '')
+    ) {
+      return;
+    }
+
+    const steps = getBulkSyncSteps(state.handle);
+    const step = steps[state.step];
+    if (!step) {
+      GM_setValue(SYNC_STATE_KEY, null);
+      return;
+    }
+
+    if (window.location.pathname.replace(/\/+$/, '') !== step.path) {
+      window.location.assign(`https://x.com${step.path}`);
+      return;
+    }
+
+    setStatus(`正在批量更新${step.label}，请勿关闭页面…`);
+    const collection = await scanBulkSyncPage(step);
+    const data = loadData();
+    data[step.collection] = collection;
+    data.updatedAt = now();
+    saveData(data);
+
+    const nextStep = state.step + 1;
+    if (nextStep >= steps.length) {
+      GM_setValue(SYNC_STATE_KEY, null);
+      setStatus(
+        `批量更新完成：书签 ${data.bookmarks ? Object.keys(data.bookmarks).length : 0}，喜欢 ${data.likes ? Object.keys(data.likes).length : 0}，关注 ${Object.keys(data.follows).length}`,
+      );
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      return;
+    }
+
+    GM_setValue(SYNC_STATE_KEY, {
+      ...state,
+      step: nextStep,
+    });
+    window.location.assign(`https://x.com${steps[nextStep].path}`);
+  }
+
+  function startBulkSync() {
+    const handle = detectAccountHandle();
+    if (!handle) {
+      setStatus('请先填写有效的 X 用户名（不含 @）');
+      accountHandleInput?.focus();
+      return;
+    }
+
+    const confirmed = window.confirm(
+      [
+        '一键更新会依次打开书签、喜欢和关注页面。',
+        '每个分类会使用本次扫描结果替换本地旧记录，可能覆盖或删除以前保存的数据。',
+        `当前账号：@${handle}`,
+        '是否继续？',
+      ].join('\n'),
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    GM_setValue(ACCOUNT_HANDLE_KEY, handle);
+    GM_setValue(SYNC_STATE_KEY, {
+      version: 1,
+      handle,
+      step: 0,
+      startedAt: now(),
+    });
+    window.location.assign('https://x.com/i/bookmarks');
+  }
+
   function exportJson() {
     const data = loadData();
     const json = JSON.stringify(data, null, 2);
@@ -631,6 +845,39 @@
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 8px;
+      }
+      .account-field {
+        display: grid;
+        gap: 5px;
+        margin-bottom: 10px;
+      }
+      .account-field label {
+        color: #94a3b8;
+        font-size: 11px;
+      }
+      .account-field input {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 34px;
+        padding: 6px 9px;
+        border: 1px solid #475569;
+        border-radius: 8px;
+        color: #f8fafc;
+        background: #111827;
+        font: inherit;
+      }
+      .account-field input:focus {
+        border-color: #38bdf8;
+        outline: 2px solid rgb(56 189 248 / 25%);
+      }
+      .bulk-sync-button {
+        grid-column: 1 / -1;
+        border-color: #0369a1;
+        background: #075985;
+        font-weight: 700;
+      }
+      .bulk-sync-button:hover {
+        background: #0c4a6e;
       }
       button {
         min-height: 34px;
@@ -907,9 +1154,32 @@
     const title = document.createElement('h2');
     title.textContent = 'RECALLX';
 
+    const accountField = document.createElement('div');
+    accountField.className = 'account-field';
+    const accountLabel = document.createElement('label');
+    accountLabel.htmlFor = 'recallx-account-handle';
+    accountLabel.textContent = '同步账号';
+    accountHandleInput = document.createElement('input');
+    accountHandleInput.id = 'recallx-account-handle';
+    accountHandleInput.type = 'text';
+    accountHandleInput.inputMode = 'text';
+    accountHandleInput.autocomplete = 'off';
+    accountHandleInput.maxLength = 15;
+    accountHandleInput.placeholder = '用户名（不含 @）';
+    accountHandleInput.value = detectAccountHandle() || '';
+    accountHandleInput.addEventListener('change', () => {
+      const handle = accountHandleInput.value.trim().replace(/^@/, '');
+      if (HANDLE_PATTERN.test(handle)) {
+        accountHandleInput.value = handle;
+        GM_setValue(ACCOUNT_HANDLE_KEY, handle);
+      }
+    });
+    accountField.append(accountLabel, accountHandleInput);
+
     const buttons = document.createElement('div');
     buttons.className = 'buttons';
     const actions = [
+      ['一键更新', startBulkSync],
       ['导出 JSON', exportJson],
       ['统计', showStats],
     ];
@@ -919,6 +1189,9 @@
       button.type = 'button';
       button.textContent = label;
       button.addEventListener('click', handler);
+      if (handler === startBulkSync) {
+        button.className = 'bulk-sync-button';
+      }
       if (handler === showStats) {
         statsTriggerButton = button;
       }
@@ -976,11 +1249,12 @@
       }
     });
 
-    panel.append(title, buttons, statusElement);
+    panel.append(title, accountField, buttons, statusElement);
     shadow.append(style, panel, statsModalElement);
     document.body.append(host);
   }
 
   createPanel();
   initInteractionCapture();
+  resumeBulkSync();
 })();

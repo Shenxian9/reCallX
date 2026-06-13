@@ -57,6 +57,12 @@ version 2 不包含 `profiles` 和 `tweets` 普通备份集合。
 5. remove bookmark 删除 bookmarks 记录。
 6. unfollow 删除 follows 记录。
 7. 新增或删除成功时更新 `updatedAt`。
+8. 批量更新会整体替换单个集合，采集记录的 `source` 为 `bulk-sync`。
+
+`source` 可取：
+
+- `user-click`：捕获用户真实点击；
+- `bulk-sync`：一键更新从书签、喜欢或关注页面批量采集。
 
 ## Version 1 迁移
 
