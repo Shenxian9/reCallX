@@ -19,9 +19,10 @@
 5. 导出包含完整本地数据的 JSON 文件。
 6. 显示 profiles 数量、tweets 数量和 `updatedAt`。
 7. 监听用户真实点击红心、书签和关注按钮的事件：
-   - 点赞记录写入 `tweets` 和 `likes`；
-   - 书签记录写入 `tweets` 和 `bookmarks`；
-   - 关注记录写入 `profiles` 和 `follows`。
+   - 点赞记录只写入 `likes`；
+   - 书签记录只写入 `bookmarks`；
+   - 关注记录只写入 `follows`；
+   - 取消动作删除对应交互集合中的记录。
 8. 统计同时显示 profiles、tweets、likes、bookmarks 和 follows 数量。
 
 ## 非目标功能
@@ -46,8 +47,9 @@
 - 扫描动作必须由用户点击触发，且不得通过滚动扩大扫描范围。
 - 行为捕获只能监听用户真实产生的 click 事件，不得主动触发 X 页面按钮。
 - 不调用 X 内部 API 查询交互状态。
-- likes、bookmarks 和 follows 是历史备份，不保证与 X 当前状态完全一致。
-- 用户取消点赞、取消收藏或取消关注时，不删除已有备份，也不新增对应行为记录。
+- 同一次交互 URL 只在对应交互集合中保存一份，不额外复制到 tweets 或 profiles。
+- 取消点赞、取消收藏或取消关注时，删除对应 likes、bookmarks 或 follows 记录。
+- 取消交互不得删除用户通过保存当前页或扫描可见链接得到的 tweets/profiles 记录。
 
 ## 用户交互识别
 
@@ -55,7 +57,8 @@
   `document.addEventListener('click', handleDocumentClick, true)`。
 - 只处理用户点击路径中最近的 `button` 或 `div[role="button"]`。
 - 动作识别只参考按钮的 `data-testid`、`aria-label` 和 `innerText`。
-- `unlike`、`removeBookmark`、`remove-bookmark` 和 `unfollow` 等取消动作不记录。
+- `unlike` 删除对应 like，`removeBookmark` / `remove-bookmark` 删除对应 bookmark，
+  `unfollow` 删除对应 follow。
 - 点赞和书签优先从最近的 `article` 中读取 `/status/` 链接；详情页可回退到当前 URL。
 - 关注优先从最近的 `[data-testid="UserCell"]` 读取主页链接，再检查附近 article
   或父元素；用户主页可回退到当前 URL。
@@ -119,4 +122,6 @@
 - 数据损坏或结构不兼容时，脚本应安全回退为空的 version 1 数据，不执行远程恢复。
 - 旧 version 1 数据缺少 likes、bookmarks 或 follows 时，加载后自动补为空对象，
   并保留已有 profiles 和 tweets。
+- 加载旧版冗余交互数据时，如果 tweets/profiles 中同 URL 的记录来源为 `user-click`
+  且已经存在于对应交互集合，则移除该冗余副本；手动保存或扫描记录不受影响。
 - JSON 导出文件名为 `recallx-backup-YYYY-MM-DD.json`。

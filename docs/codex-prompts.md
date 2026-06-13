@@ -24,8 +24,10 @@ data-testid、aria-label 和 innerText。
 不得实现未经用户明确要求的 GitHub 或其他远程同步。
 不得硬编码 token、账号、密码、Cookie 或其他凭据。
 
-likes、bookmarks、follows 是历史备份而非状态同步：
-取消点赞、取消收藏、取消关注时不删除旧备份，也不新增取消动作记录。
+交互 URL 只保存在对应的 likes、bookmarks 或 follows 集合，不要额外复制到
+tweets 或 profiles。
+捕获取消点赞、取消收藏、取消关注时，删除对应交互集合中的记录，但不得删除
+current-page 或 visible-link 来源的 tweets/profiles 独立备份。
 ```
 
 ## 数据兼容要求

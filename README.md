@@ -41,8 +41,10 @@ X（`x.com` / `twitter.com`）页面中可见的用户主页、推文 URL，以�
 同一个规范化 URL 只保留一条记录。再次遇到已保存 URL 时不会重复新增。
 所有 `savedAt` 和 `updatedAt` 时间均使用东八区（UTC+08:00）并带有明确时区偏移。
 
-likes、bookmarks 和 follows 是用户交互的历史备份，不是 X 当前状态的镜像。如果用户之后
-取消点赞、取消收藏或取消关注，RECALLX 默认保留旧备份，不执行删除。
+交互 URL 只保存在对应集合中，不会因为一次点赞同时在 `tweets` 和 `likes` 中保存两份。
+`tweets` 和 `profiles` 仅用于“保存当前页”和“扫描可见链接”产生的普通 URL 备份。
+用户取消点赞、取消收藏或取消关注时，RECALLX 会删除对应的 likes、bookmarks 或 follows
+记录，但不会删除用户单独保存或扫描得到的 tweets/profiles 记录。
 
 ## 安全边界
 

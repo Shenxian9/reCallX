@@ -84,22 +84,25 @@ RECALLX 使用 Tampermonkey 本地存储保存一个版本化根对象。`profil
 1. 以 record 的 `url` 作为对应 map 的 key。
 2. 已存在相同 key 时不覆盖首次保存的 `savedAt` 和 `source`。
 3. 新增任意 record 时，将 root `updatedAt` 更新为同一次写入的时间。
-4. 点赞先确保 tweet 存在于 `tweets`，再将交互备份写入 `likes`。
-5. 添加书签先确保 tweet 存在于 `tweets`，再将交互备份写入 `bookmarks`。
-6. 关注先确保 profile 存在于 `profiles`，再将交互备份写入 `follows`。
+4. 点赞只将 tweet record 写入 `likes`，不额外写入 `tweets`。
+5. 添加书签只将 tweet record 写入 `bookmarks`，不额外写入 `tweets`。
+6. 关注只将 profile record 写入 `follows`，不额外写入 `profiles`。
 7. 旧 version 1 数据缺失 `likes`、`bookmarks` 或 `follows` 时自动补空对象，
    不清空已有 `profiles` 和 `tweets`。
 8. 缺失或损坏的集合字段回退为空对象；根对象继续使用 version 1。
 9. version 1 不包含凭据或任何远程同步配置。
+10. 兼容旧版冗余数据：若 tweets/profiles 中的记录来源为 `user-click`，且同 URL
+    已存在于相应交互集合，加载时删除该冗余副本；其他来源的普通备份保持不变。
 
 ## Interaction record semantics
 
 `likes` 和 `bookmarks` 中的值使用 tweet record 结构，`follows` 中的值使用 profile
 record 结构。交互记录的 `source` 为 `user-click`，`savedAt` 是首次捕获该行为的时间。
 
-这些集合是只追加、不自动删除的历史备份：
+这些集合跟随用户捕获到的取消动作更新：
 
-- 取消点赞不会删除 `likes` 中的旧记录；
-- 取消收藏不会删除 `bookmarks` 中的旧记录；
-- 取消关注不会删除 `follows` 中的旧记录；
-- 因此它们不保证与 X 当前显示的交互状态完全一致。
+- 取消点赞删除 `likes` 中的对应记录；
+- 取消收藏删除 `bookmarks` 中的对应记录；
+- 取消关注删除 `follows` 中的对应记录；
+- 取消动作不会删除 `tweets` 或 `profiles` 中由 `current-page` / `visible-link`
+  创建的独立 URL 备份。

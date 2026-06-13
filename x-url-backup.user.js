@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.2.0
+// @version      0.2.1
 // @description  Locally back up visible X URLs and user-triggered interactions.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -74,6 +74,22 @@
     }
     shaped.updatedAt =
       typeof shaped.updatedAt === 'string' ? shaped.updatedAt : '';
+
+    // Remove interaction-created duplicates from data written by version 0.2.0.
+    // Explicitly saved/scanned profile and tweet records remain untouched.
+    for (const url of new Set([
+      ...Object.keys(shaped.likes),
+      ...Object.keys(shaped.bookmarks),
+    ])) {
+      if (shaped.tweets[url]?.source === 'user-click') {
+        delete shaped.tweets[url];
+      }
+    }
+    for (const url of Object.keys(shaped.follows)) {
+      if (shaped.profiles[url]?.source === 'user-click') {
+        delete shaped.profiles[url];
+      }
+    }
 
     return shaped;
   }
@@ -187,7 +203,6 @@
       return false;
     }
 
-    saveRecord(tweetRecord, source);
     const data = loadData();
     const collection =
       interactionType === 'like' ? data.likes : data.bookmarks;
@@ -216,7 +231,6 @@
       return false;
     }
 
-    saveRecord(profileRecord, source);
     const data = loadData();
 
     if (data.follows[profileRecord.url]) {
@@ -230,6 +244,49 @@
       source,
     };
     data.updatedAt = savedAt;
+    saveData(data);
+    return true;
+  }
+
+  function removeTweetInteraction(tweetRecord, interactionType) {
+    if (
+      !tweetRecord ||
+      tweetRecord.type !== 'tweet' ||
+      !['unlike', 'remove-bookmark'].includes(interactionType)
+    ) {
+      return false;
+    }
+
+    const data = loadData();
+    const collection =
+      interactionType === 'unlike' ? data.likes : data.bookmarks;
+
+    if (!collection[tweetRecord.url]) {
+      return false;
+    }
+
+    delete collection[tweetRecord.url];
+    data.updatedAt = now();
+    saveData(data);
+    return true;
+  }
+
+  function removeProfileInteraction(profileRecord, interactionType) {
+    if (
+      !profileRecord ||
+      profileRecord.type !== 'profile' ||
+      interactionType !== 'unfollow'
+    ) {
+      return false;
+    }
+
+    const data = loadData();
+    if (!data.follows[profileRecord.url]) {
+      return false;
+    }
+
+    delete data.follows[profileRecord.url];
+    data.updatedAt = now();
     saveData(data);
     return true;
   }
@@ -306,7 +363,7 @@
     const followText = `${ariaLabel} ${buttonText}`;
 
     if (testId.includes('unlike')) {
-      return null;
+      return 'unlike';
     }
     if (testId.includes('like')) {
       return 'like';
@@ -316,14 +373,14 @@
       testId.includes('removebookmark') ||
       testId.includes('remove-bookmark')
     ) {
-      return null;
+      return 'remove-bookmark';
     }
     if (testId.includes('bookmark')) {
       return 'bookmark';
     }
 
     if (testId.includes('unfollow')) {
-      return null;
+      return 'unfollow';
     }
     if (testId.includes('follow')) {
       return 'follow';
@@ -333,7 +390,7 @@
       /\b(?:unfollow|following)\b/i.test(followText) ||
       /取消关注|正在关注|フォロー中|フォロー解除/.test(followText)
     ) {
-      return null;
+      return 'unfollow';
     }
     if (/\bfollow\b/i.test(followText) || /关注|フォロー/.test(followText)) {
       return 'follow';
@@ -407,23 +464,38 @@
       return;
     }
 
-    if (action === 'like' || action === 'bookmark') {
+    if (
+      action === 'like' ||
+      action === 'bookmark' ||
+      action === 'unlike' ||
+      action === 'remove-bookmark'
+    ) {
       const tweetRecord = findTweetRecordNearElement(button);
-      if (
-        tweetRecord &&
-        saveTweetInteraction(tweetRecord, action, 'user-click')
-      ) {
-        console.info(`[RECALLX] captured ${action}: ${tweetRecord.url}`);
+      if (!tweetRecord) {
+        return;
+      }
+
+      const changed =
+        action === 'like' || action === 'bookmark'
+          ? saveTweetInteraction(tweetRecord, action, 'user-click')
+          : removeTweetInteraction(tweetRecord, action);
+      if (changed) {
+        console.info(`[RECALLX] updated ${action}: ${tweetRecord.url}`);
       }
       return;
     }
 
     const profileRecord = findProfileRecordNearElement(button);
-    if (
-      profileRecord &&
-      saveProfileInteraction(profileRecord, action, 'user-click')
-    ) {
-      console.info(`[RECALLX] captured ${action}: ${profileRecord.url}`);
+    if (!profileRecord) {
+      return;
+    }
+
+    const changed =
+      action === 'follow'
+        ? saveProfileInteraction(profileRecord, action, 'user-click')
+        : removeProfileInteraction(profileRecord, action);
+    if (changed) {
+      console.info(`[RECALLX] updated ${action}: ${profileRecord.url}`);
     }
   }
 
