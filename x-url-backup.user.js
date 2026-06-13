@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.2.1
+// @version      0.3.0
 // @description  Locally back up visible X URLs and user-triggered interactions.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -32,6 +32,10 @@
   const HANDLE_PATTERN = /^[A-Za-z0-9_]{1,15}$/;
   const TWEET_ID_PATTERN = /^\d+$/;
   let statusElement = null;
+  let statsModalElement = null;
+  let statsContentElement = null;
+  let statsCloseButton = null;
+  let statsTriggerButton = null;
 
   function now() {
     const offsetMilliseconds = 8 * 60 * 60 * 1000;
@@ -297,6 +301,15 @@
     }
   }
 
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
   function saveCurrentPage() {
     const record = parseXUrl(window.location.href);
 
@@ -538,23 +551,85 @@
 
   function showStats() {
     const data = loadData();
-    const profileCount = Object.keys(data.profiles).length;
-    const tweetCount = Object.keys(data.tweets).length;
-    const likeCount = Object.keys(data.likes).length;
-    const bookmarkCount = Object.keys(data.bookmarks).length;
-    const followCount = Object.keys(data.follows).length;
-    const updatedAt = data.updatedAt || '尚无记录';
+    const counts = {
+      profiles: Object.keys(data.profiles).length,
+      tweets: Object.keys(data.tweets).length,
+      likes: Object.keys(data.likes).length,
+      bookmarks: Object.keys(data.bookmarks).length,
+      follows: Object.keys(data.follows).length,
+    };
+    const urlBackupTotal = counts.profiles + counts.tweets;
+    const interactionTotal = counts.likes + counts.bookmarks + counts.follows;
+    const total = urlBackupTotal + interactionTotal;
 
-    setStatus(
-      [
-        `profiles: ${profileCount}`,
-        `tweets: ${tweetCount}`,
-        `likes: ${likeCount}`,
-        `bookmarks: ${bookmarkCount}`,
-        `follows: ${followCount}`,
-        `updatedAt: ${updatedAt}`,
-      ].join(' · '),
-    );
+    if (!statsModalElement || !statsContentElement) {
+      setStatus(`共 ${total} 条本地记录`);
+      return;
+    }
+
+    const statCard = (label, count, tone) => `
+      <div class="stat-card stat-card--${tone}">
+        <span class="stat-card__label">${label}</span>
+        <strong class="stat-card__value">${count}</strong>
+      </div>
+    `;
+
+    statsContentElement.innerHTML = `
+      <div class="stats-summary">
+        <span class="stats-summary__label">本地记录总计</span>
+        <strong class="stats-summary__value">${total}</strong>
+        <span class="stats-summary__hint">全部数据仅保存在 Tampermonkey 本地存储</span>
+      </div>
+      <section class="stats-section" aria-labelledby="recallx-url-stats-title">
+        <div class="stats-section__heading">
+          <div>
+            <h3 id="recallx-url-stats-title">URL 备份</h3>
+            <p>手动保存或扫描得到的独立链接</p>
+          </div>
+          <span class="stats-section__total">${urlBackupTotal} 条</span>
+        </div>
+        <div class="stats-grid">
+          ${statCard('用户主页', counts.profiles, 'profile')}
+          ${statCard('推文', counts.tweets, 'tweet')}
+        </div>
+      </section>
+      <section class="stats-section" aria-labelledby="recallx-action-stats-title">
+        <div class="stats-section__heading">
+          <div>
+            <h3 id="recallx-action-stats-title">交互记录</h3>
+            <p>由用户真实点击捕获，可随取消操作移除</p>
+          </div>
+          <span class="stats-section__total">${interactionTotal} 条</span>
+        </div>
+        <div class="stats-grid stats-grid--three">
+          ${statCard('点赞', counts.likes, 'like')}
+          ${statCard('书签', counts.bookmarks, 'bookmark')}
+          ${statCard('关注', counts.follows, 'follow')}
+        </div>
+      </section>
+      <dl class="stats-meta">
+        <div>
+          <dt>最后更新</dt>
+          <dd>${escapeHtml(data.updatedAt || '尚无记录')}</dd>
+        </div>
+        <div>
+          <dt>数据版本</dt>
+          <dd>Version ${data.version}</dd>
+        </div>
+      </dl>
+    `;
+
+    statsModalElement.hidden = false;
+    statsCloseButton?.focus();
+  }
+
+  function closeStats() {
+    if (!statsModalElement || statsModalElement.hidden) {
+      return;
+    }
+
+    statsModalElement.hidden = true;
+    statsTriggerButton?.focus();
   }
 
   function createPanel() {
@@ -617,6 +692,190 @@
         color: #cbd5e1;
         overflow-wrap: anywhere;
       }
+      .stats-modal[hidden] {
+        display: none;
+      }
+      .stats-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        display: grid;
+        place-items: center;
+        box-sizing: border-box;
+        padding: 20px;
+        background: rgb(2 6 23 / 72%);
+        backdrop-filter: blur(4px);
+      }
+      .stats-dialog {
+        box-sizing: border-box;
+        width: min(560px, 100%);
+        max-height: min(720px, calc(100vh - 40px));
+        overflow-y: auto;
+        border: 1px solid #334155;
+        border-radius: 18px;
+        color: #e2e8f0;
+        background: #0f172a;
+        box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+      }
+      .stats-dialog__header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 20px 22px 14px;
+        border-bottom: 1px solid #1e293b;
+      }
+      .stats-dialog__eyebrow {
+        display: block;
+        margin-bottom: 4px;
+        color: #38bdf8;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .stats-dialog h2,
+      .stats-dialog h3,
+      .stats-dialog p {
+        margin: 0;
+      }
+      .stats-dialog h2 {
+        color: #f8fafc;
+        font-size: 21px;
+        letter-spacing: normal;
+      }
+      .stats-close {
+        width: 34px;
+        min-height: 34px;
+        padding: 0;
+        border-radius: 50%;
+        font-size: 20px;
+        line-height: 1;
+      }
+      .stats-dialog__body {
+        display: grid;
+        gap: 16px;
+        padding: 18px 22px 22px;
+      }
+      .stats-summary {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 2px 16px;
+        align-items: center;
+        padding: 16px 18px;
+        border: 1px solid #075985;
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgb(14 116 144 / 25%), rgb(30 41 59 / 55%));
+      }
+      .stats-summary__label {
+        color: #bae6fd;
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .stats-summary__value {
+        grid-row: 1 / 3;
+        grid-column: 2;
+        color: #f8fafc;
+        font-size: 34px;
+        line-height: 1;
+      }
+      .stats-summary__hint {
+        color: #94a3b8;
+        font-size: 11px;
+      }
+      .stats-section {
+        padding: 15px;
+        border: 1px solid #273449;
+        border-radius: 14px;
+        background: #111c2f;
+      }
+      .stats-section__heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .stats-section h3 {
+        color: #f1f5f9;
+        font-size: 14px;
+      }
+      .stats-section p {
+        margin-top: 2px;
+        color: #64748b;
+        font-size: 11px;
+      }
+      .stats-section__total {
+        flex: none;
+        padding: 3px 8px;
+        border-radius: 999px;
+        color: #cbd5e1;
+        background: #1e293b;
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .stats-grid--three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .stat-card {
+        display: grid;
+        gap: 7px;
+        padding: 12px;
+        border: 1px solid #334155;
+        border-radius: 11px;
+        background: #0b1324;
+      }
+      .stat-card__label {
+        color: #94a3b8;
+        font-size: 11px;
+      }
+      .stat-card__value {
+        color: #f8fafc;
+        font-size: 24px;
+        line-height: 1;
+      }
+      .stat-card--profile { border-top-color: #22d3ee; }
+      .stat-card--tweet { border-top-color: #60a5fa; }
+      .stat-card--like { border-top-color: #fb7185; }
+      .stat-card--bookmark { border-top-color: #c084fc; }
+      .stat-card--follow { border-top-color: #4ade80; }
+      .stats-meta {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+      }
+      .stats-meta > div {
+        display: grid;
+        grid-template-columns: 90px minmax(0, 1fr);
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 9px;
+        background: #111827;
+      }
+      .stats-meta dt {
+        color: #64748b;
+      }
+      .stats-meta dd {
+        margin: 0;
+        color: #cbd5e1;
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+      @media (max-width: 480px) {
+        .stats-grid--three {
+          grid-template-columns: 1fr;
+        }
+        .stats-dialog__body,
+        .stats-dialog__header {
+          padding-right: 16px;
+          padding-left: 16px;
+        }
+      }
     `;
 
     const panel = document.createElement('section');
@@ -640,6 +899,9 @@
       button.type = 'button';
       button.textContent = label;
       button.addEventListener('click', handler);
+      if (handler === showStats) {
+        statsTriggerButton = button;
+      }
       buttons.append(button);
     }
 
@@ -648,8 +910,44 @@
     statusElement.setAttribute('aria-live', 'polite');
     statusElement.textContent = '数据仅保存在本地';
 
+    statsModalElement = document.createElement('div');
+    statsModalElement.className = 'stats-modal';
+    statsModalElement.hidden = true;
+    statsModalElement.innerHTML = `
+      <section
+        class="stats-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="recallx-stats-title"
+      >
+        <header class="stats-dialog__header">
+          <div>
+            <span class="stats-dialog__eyebrow">RECALLX LOCAL DATA</span>
+            <h2 id="recallx-stats-title">备份统计</h2>
+          </div>
+          <button class="stats-close" type="button" aria-label="关闭统计窗口">×</button>
+        </header>
+        <div class="stats-dialog__body"></div>
+      </section>
+    `;
+    statsContentElement = statsModalElement.querySelector(
+      '.stats-dialog__body',
+    );
+    statsCloseButton = statsModalElement.querySelector('.stats-close');
+    statsCloseButton.addEventListener('click', closeStats);
+    statsModalElement.addEventListener('click', (event) => {
+      if (event.target === statsModalElement) {
+        closeStats();
+      }
+    });
+    shadow.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeStats();
+      }
+    });
+
     panel.append(title, buttons, statusElement);
-    shadow.append(style, panel);
+    shadow.append(style, panel, statsModalElement);
     document.body.append(host);
   }
 

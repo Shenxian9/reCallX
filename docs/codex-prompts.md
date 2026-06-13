@@ -6,7 +6,8 @@
 
 - 保存当前用户主页或推文详情页。
 - 扫描当前视口内已经渲染且可见的 `a[href]`。
-- 导出本地 JSON 并显示 profiles、tweets、likes、bookmarks、follows 统计。
+- 导出本地 JSON，并通过分类清晰的可视化弹窗展示
+  profiles、tweets、likes、bookmarks、follows 统计。
 - 通过事件委托记录用户真实点击产生的点赞、书签和关注备份。
 
 ## 必须遵守的提示词

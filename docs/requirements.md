@@ -17,13 +17,17 @@
    - 按规范化 URL 去重。
 4. 使用 `GM_getValue` 和 `GM_setValue` 读写本地数据。
 5. 导出包含完整本地数据的 JSON 文件。
-6. 显示 profiles 数量、tweets 数量和 `updatedAt`。
+6. 点击“统计”打开独立可视化窗口：
+   - URL 备份分类展示 profiles、tweets 和分类小计；
+   - 交互记录分类展示 likes、bookmarks、follows 和分类小计；
+   - 展示全部记录总计、`updatedAt` 和数据版本；
+   - 支持关闭按钮、点击遮罩关闭和 Escape 键关闭。
 7. 监听用户真实点击红心、书签和关注按钮的事件：
    - 点赞记录只写入 `likes`；
    - 书签记录只写入 `bookmarks`；
    - 关注记录只写入 `follows`；
    - 取消动作删除对应交互集合中的记录。
-8. 统计同时显示 profiles、tweets、likes、bookmarks 和 follows 数量。
+8. 统计窗口需适配窄屏，并使用明确的标题、分组、标签和数值层级。
 
 ## 非目标功能
 
