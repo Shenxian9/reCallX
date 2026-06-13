@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.1.0
-// @description  Locally back up visible X profile and post URLs.
+// @version      0.2.0
+// @description  Locally back up visible X URLs and user-triggered interactions.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @grant        GM_getValue
@@ -34,7 +34,10 @@
   let statusElement = null;
 
   function now() {
-    return new Date().toISOString();
+    const offsetMilliseconds = 8 * 60 * 60 * 1000;
+    return `${new Date(Date.now() + offsetMilliseconds)
+      .toISOString()
+      .slice(0, -1)}+08:00`;
   }
 
   function emptyData() {
@@ -42,33 +45,41 @@
       version: 1,
       profiles: {},
       tweets: {},
+      likes: {},
+      bookmarks: {},
+      follows: {},
       updatedAt: '',
     };
   }
 
-  function loadData() {
-    const stored = GM_getValue(STORAGE_KEY, null);
+  function ensureDataShape(data) {
+    const shaped = data && typeof data === 'object' ? data : {};
+    const collectionNames = [
+      'profiles',
+      'tweets',
+      'likes',
+      'bookmarks',
+      'follows',
+    ];
 
-    if (
-      !stored ||
-      typeof stored !== 'object' ||
-      stored.version !== 1 ||
-      !stored.profiles ||
-      typeof stored.profiles !== 'object' ||
-      Array.isArray(stored.profiles) ||
-      !stored.tweets ||
-      typeof stored.tweets !== 'object' ||
-      Array.isArray(stored.tweets)
-    ) {
-      return emptyData();
+    shaped.version = 1;
+    for (const name of collectionNames) {
+      if (
+        !shaped[name] ||
+        typeof shaped[name] !== 'object' ||
+        Array.isArray(shaped[name])
+      ) {
+        shaped[name] = {};
+      }
     }
+    shaped.updatedAt =
+      typeof shaped.updatedAt === 'string' ? shaped.updatedAt : '';
 
-    return {
-      version: 1,
-      profiles: stored.profiles,
-      tweets: stored.tweets,
-      updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : '',
-    };
+    return shaped;
+  }
+
+  function loadData() {
+    return ensureDataShape(GM_getValue(STORAGE_KEY, null));
   }
 
   function saveData(data) {
@@ -77,6 +88,10 @@
 
   function normalizeUrl(url) {
     let parsed;
+
+    if (typeof url !== 'string' || !url.trim()) {
+      return null;
+    }
 
     try {
       parsed = new URL(url, window.location.href);
@@ -163,6 +178,62 @@
     return true;
   }
 
+  function saveTweetInteraction(tweetRecord, interactionType, source) {
+    if (
+      !tweetRecord ||
+      tweetRecord.type !== 'tweet' ||
+      !['like', 'bookmark'].includes(interactionType)
+    ) {
+      return false;
+    }
+
+    saveRecord(tweetRecord, source);
+    const data = loadData();
+    const collection =
+      interactionType === 'like' ? data.likes : data.bookmarks;
+
+    if (collection[tweetRecord.url]) {
+      return false;
+    }
+
+    const savedAt = now();
+    collection[tweetRecord.url] = {
+      ...tweetRecord,
+      savedAt,
+      source,
+    };
+    data.updatedAt = savedAt;
+    saveData(data);
+    return true;
+  }
+
+  function saveProfileInteraction(profileRecord, interactionType, source) {
+    if (
+      !profileRecord ||
+      profileRecord.type !== 'profile' ||
+      interactionType !== 'follow'
+    ) {
+      return false;
+    }
+
+    saveRecord(profileRecord, source);
+    const data = loadData();
+
+    if (data.follows[profileRecord.url]) {
+      return false;
+    }
+
+    const savedAt = now();
+    data.follows[profileRecord.url] = {
+      ...profileRecord,
+      savedAt,
+      source,
+    };
+    data.updatedAt = savedAt;
+    saveData(data);
+    return true;
+  }
+
   function setStatus(message) {
     if (statusElement) {
       statusElement.textContent = message;
@@ -228,6 +299,138 @@
     setStatus(`识别 ${uniqueRecords.size} 条，新增 ${addedCount} 条`);
   }
 
+  function detectActionFromButton(button) {
+    const testId = (button.getAttribute('data-testid') || '').toLowerCase();
+    const ariaLabel = (button.getAttribute('aria-label') || '').trim();
+    const buttonText = (button.innerText || '').trim();
+    const followText = `${ariaLabel} ${buttonText}`;
+
+    if (testId.includes('unlike')) {
+      return null;
+    }
+    if (testId.includes('like')) {
+      return 'like';
+    }
+
+    if (
+      testId.includes('removebookmark') ||
+      testId.includes('remove-bookmark')
+    ) {
+      return null;
+    }
+    if (testId.includes('bookmark')) {
+      return 'bookmark';
+    }
+
+    if (testId.includes('unfollow')) {
+      return null;
+    }
+    if (testId.includes('follow')) {
+      return 'follow';
+    }
+
+    if (
+      /\b(?:unfollow|following)\b/i.test(followText) ||
+      /取消关注|正在关注|フォロー中|フォロー解除/.test(followText)
+    ) {
+      return null;
+    }
+    if (/\bfollow\b/i.test(followText) || /关注|フォロー/.test(followText)) {
+      return 'follow';
+    }
+
+    return null;
+  }
+
+  function findTweetRecordNearElement(element) {
+    const article = element.closest('article');
+    if (article) {
+      for (const link of article.querySelectorAll('a[href*="/status/"]')) {
+        const record = parseXUrl(normalizeUrl(link.href));
+        if (record && record.type === 'tweet') {
+          return record;
+        }
+      }
+    }
+
+    const currentRecord = parseXUrl(window.location.href);
+    return currentRecord && currentRecord.type === 'tweet'
+      ? currentRecord
+      : null;
+  }
+
+  function findProfileRecordInContainer(container) {
+    if (!container) {
+      return null;
+    }
+
+    for (const link of container.querySelectorAll('a[href]')) {
+      const record = parseXUrl(link.href);
+      if (record && record.type === 'profile') {
+        return record;
+      }
+    }
+
+    return null;
+  }
+
+  function findProfileRecordNearElement(element) {
+    const userCell = element.closest('[data-testid="UserCell"]');
+    const article = element.closest('article');
+    const nearbyContainers = [userCell, article, element.parentElement];
+
+    for (const container of nearbyContainers) {
+      const record = findProfileRecordInContainer(container);
+      if (record) {
+        return record;
+      }
+    }
+
+    const currentRecord = parseXUrl(window.location.href);
+    return currentRecord && currentRecord.type === 'profile'
+      ? currentRecord
+      : null;
+  }
+
+  function handleDocumentClick(event) {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    const button = event.target.closest('button, div[role="button"]');
+    if (!button) {
+      return;
+    }
+
+    const action = detectActionFromButton(button);
+    if (!action) {
+      return;
+    }
+
+    if (action === 'like' || action === 'bookmark') {
+      const tweetRecord = findTweetRecordNearElement(button);
+      if (
+        tweetRecord &&
+        saveTweetInteraction(tweetRecord, action, 'user-click')
+      ) {
+        console.info(`[RECALLX] captured ${action}: ${tweetRecord.url}`);
+      }
+      return;
+    }
+
+    const profileRecord = findProfileRecordNearElement(button);
+    if (
+      profileRecord &&
+      saveProfileInteraction(profileRecord, action, 'user-click')
+    ) {
+      console.info(`[RECALLX] captured ${action}: ${profileRecord.url}`);
+    }
+  }
+
+  function initInteractionCapture() {
+    document.addEventListener('click', handleDocumentClick, true);
+  }
+
   function exportJson() {
     const data = loadData();
     const json = JSON.stringify(data, null, 2);
@@ -265,10 +468,20 @@
     const data = loadData();
     const profileCount = Object.keys(data.profiles).length;
     const tweetCount = Object.keys(data.tweets).length;
+    const likeCount = Object.keys(data.likes).length;
+    const bookmarkCount = Object.keys(data.bookmarks).length;
+    const followCount = Object.keys(data.follows).length;
     const updatedAt = data.updatedAt || '尚无记录';
 
     setStatus(
-      `profiles: ${profileCount} · tweets: ${tweetCount} · updatedAt: ${updatedAt}`,
+      [
+        `profiles: ${profileCount}`,
+        `tweets: ${tweetCount}`,
+        `likes: ${likeCount}`,
+        `bookmarks: ${bookmarkCount}`,
+        `follows: ${followCount}`,
+        `updatedAt: ${updatedAt}`,
+      ].join(' · '),
     );
   }
 
@@ -369,4 +582,5 @@
   }
 
   createPanel();
+  initInteractionCapture();
 })();

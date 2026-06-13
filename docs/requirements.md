@@ -18,12 +18,18 @@
 4. 使用 `GM_getValue` 和 `GM_setValue` 读写本地数据。
 5. 导出包含完整本地数据的 JSON 文件。
 6. 显示 profiles 数量、tweets 数量和 `updatedAt`。
+7. 监听用户真实点击红心、书签和关注按钮的事件：
+   - 点赞记录写入 `tweets` 和 `likes`；
+   - 书签记录写入 `tweets` 和 `bookmarks`；
+   - 关注记录写入 `profiles` 和 `follows`。
+8. 统计同时显示 profiles、tweets、likes、bookmarks 和 follows 数量。
 
 ## 非目标功能
 
 以下功能不属于本 MVP：
 
 - 自动关注、自动点赞或自动收藏；
+- 自动点击、恢复、重放或撤销用户行为；
 - 读取或修改点赞、收藏状态；
 - 调用 X / Twitter 内部 API；
 - 无限滚动、自动加载更多内容或高频抓取；
@@ -38,6 +44,22 @@
 - 不保存 token、账号、密码、Cookie 或其他凭据。
 - 所有账号操作均由用户在 X 页面中自行完成；脚本不代替用户执行操作。
 - 扫描动作必须由用户点击触发，且不得通过滚动扩大扫描范围。
+- 行为捕获只能监听用户真实产生的 click 事件，不得主动触发 X 页面按钮。
+- 不调用 X 内部 API 查询交互状态。
+- likes、bookmarks 和 follows 是历史备份，不保证与 X 当前状态完全一致。
+- 用户取消点赞、取消收藏或取消关注时，不删除已有备份，也不新增对应行为记录。
+
+## 用户交互识别
+
+- 使用捕获阶段事件委托：
+  `document.addEventListener('click', handleDocumentClick, true)`。
+- 只处理用户点击路径中最近的 `button` 或 `div[role="button"]`。
+- 动作识别只参考按钮的 `data-testid`、`aria-label` 和 `innerText`。
+- `unlike`、`removeBookmark`、`remove-bookmark` 和 `unfollow` 等取消动作不记录。
+- 点赞和书签优先从最近的 `article` 中读取 `/status/` 链接；详情页可回退到当前 URL。
+- 关注优先从最近的 `[data-testid="UserCell"]` 读取主页链接，再检查附近 article
+  或父元素；用户主页可回退到当前 URL。
+- 无法找到相应 tweet/profile record 时不写入任何行为数据。
 
 ## URL 识别规则
 
@@ -87,11 +109,14 @@
 ## 本地存储规则
 
 - 使用一个固定 Tampermonkey 存储键保存版本化根对象。
-- 根对象包含 `version`、`profiles`、`tweets` 和 `updatedAt`。
-- `profiles` 和 `tweets` 都是以规范化 URL 为 key 的对象。
+- 根对象包含 `version`、`profiles`、`tweets`、`likes`、`bookmarks`、`follows`
+  和 `updatedAt`。
+- 所有记录集合都是以规范化 URL 为 key 的对象。
 - 每条记录包含规范化 URL、类型、handle、保存时间及来源。
 - 推文记录还包含 `tweetId`。
-- 新记录的 `savedAt` 使用 ISO 8601 UTC 时间。
+- 新记录的 `savedAt` 使用带 `+08:00` 偏移的 ISO 8601 东八区时间。
 - 只有新增记录时才更新根对象的 `updatedAt`；重复 URL 不重复写入。
 - 数据损坏或结构不兼容时，脚本应安全回退为空的 version 1 数据，不执行远程恢复。
+- 旧 version 1 数据缺少 likes、bookmarks 或 follows 时，加载后自动补为空对象，
+  并保留已有 profiles 和 tweets。
 - JSON 导出文件名为 `recallx-backup-YYYY-MM-DD.json`。
