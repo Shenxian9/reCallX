@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.5.1
+// @version      0.5.2
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -329,30 +329,54 @@
   }
 
   function isInSidebar(element) {
-    if (
-      !element ||
-      element.closest('aside') ||
-      element.closest('[role="complementary"]')
-    ) {
-      return Boolean(element);
+    if (!element) {
+      return false;
     }
 
-    for (let node = element; node && node !== document.body; node = node.parentElement) {
-      if (node.matches('main')) {
-        return false;
-      }
+    if (
+      element.closest('aside') ||
+      element.closest('[role="complementary"]') ||
+      element.closest('[data-testid="sidebarColumn"]')
+    ) {
+      return true;
+    }
 
-      const regionLabel = [
+    const recommendationPattern =
+      /who to follow|you might like|recommended for you|people you may know|推荐关注|推荐用户|你可能喜欢|可能认识的人|おすすめユーザー|フォローおすすめ/i;
+    let depth = 0;
+    for (
+      let node = element;
+      node && node !== document.body && depth < 10;
+      node = node.parentElement, depth += 1
+    ) {
+      const stableRegionInfo = [
         node.getAttribute('aria-label') || '',
         node.getAttribute('data-testid') || '',
         node.getAttribute('role') || '',
       ].join(' ');
       if (
-        /sidebar|side.?bar|who to follow|recommended|recommendation|推荐关注|推荐用户|你可能喜欢/i.test(
-          regionLabel,
+        /sidebar|side.?bar|sidebarColumn|complementary/i.test(
+          stableRegionInfo,
         )
       ) {
         return true;
+      }
+
+      const regionText = (node.innerText || node.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 800);
+      if (recommendationPattern.test(`${stableRegionInfo} ${regionText}`)) {
+        const rect = node.getBoundingClientRect();
+        const viewportWidth =
+          window.innerWidth || document.documentElement.clientWidth;
+        const isRightColumn =
+          rect.width > 0 &&
+          viewportWidth > 0 &&
+          rect.left >= Math.max(300, viewportWidth * 0.5);
+        if (isRightColumn) {
+          return true;
+        }
       }
     }
 

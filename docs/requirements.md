@@ -58,6 +58,8 @@
   才使用当前主页 URL。
 - `aside`、`[role="complementary"]` 及可稳定识别的 sidebar / Who to follow /
   推荐关注区域中的 follow/unfollow 一律忽略。
+- 侧栏识别必须覆盖 `[data-testid="sidebarColumn"]`；对于没有明确语义 role 的布局，
+  结合推荐模块稳定文本与元素位于视口右半区的几何位置判断。
 - 禁止从 article、parentElement、大容器或页面其他 UserCell 宽泛查找点击对象。
 - 无法识别对应记录时不写入数据。
 

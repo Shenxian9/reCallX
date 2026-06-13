@@ -22,6 +22,8 @@ RECALLX 是本地优先的 X 账号交互记录工具。
 不得自动关注、自动点赞、自动收藏或自动恢复历史行为。
 follow 点击捕获必须限制在被点击按钮所属的单一 UserCell；侧边栏推荐关注必须忽略，
 不得从 article、parentElement 或全页 UserCell 推断点击对象。
+侧栏过滤必须识别 sidebarColumn，并对 Who to follow / 推荐关注等文本结合右栏位置判断，
+不能因为侧栏节点位于 main 内就停止检测。
 不得调用 X / Twitter 内部 API。
 不得无限滚动、无上限加载内容或依赖 X CSS class 名。
 一键更新允许最多 20 次有界滚动，并必须在开始前提醒用户会整体替换集合、
