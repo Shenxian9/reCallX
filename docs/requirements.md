@@ -2,130 +2,82 @@
 
 ## 目标
 
-构建一个可直接安装的 Tampermonkey userscript，在 `x.com` 和 `twitter.com`
-页面中收集用户明确要求保存的用户主页及推文 URL。数据默认只保存在本地。
+构建一个本地优先的 Tampermonkey userscript，记录用户在 `x.com` 和 `twitter.com`
+页面上真实执行的点赞、书签和关注操作，并提供 JSON 导出及可交互的详情统计。
 
 ## MVP 功能
 
-1. 在匹配页面右下角显示固定的 RECALLX 面板。
-2. “保存当前页”识别并保存：
-   - 用户主页；
-   - 推文详情页。
-3. “扫描可见链接”只检查当前视口内已经渲染且可见的 `a[href]`：
-   - 识别用户主页 URL；
-   - 识别推文 URL；
-   - 按规范化 URL 去重。
-4. 使用 `GM_getValue` 和 `GM_setValue` 读写本地数据。
-5. 导出包含完整本地数据的 JSON 文件。
-6. 点击“统计”打开独立可视化窗口：
-   - URL 备份分类展示 profiles、tweets 和分类小计；
-   - 交互记录分类展示 likes、bookmarks、follows 和分类小计；
-   - 展示全部记录总计、`updatedAt` 和数据版本；
-   - 支持关闭按钮、点击遮罩关闭和 Escape 键关闭。
-7. 监听用户真实点击红心、书签和关注按钮的事件：
-   - 点赞记录只写入 `likes`；
-   - 书签记录只写入 `bookmarks`；
-   - 关注记录只写入 `follows`；
-   - 取消动作删除对应交互集合中的记录。
-8. 统计窗口需适配窄屏，并使用明确的标题、分组、标签和数值层级。
+1. 在匹配页面右下角显示固定 RECALLX 面板。
+2. 面板仅提供：
+   - 导出 JSON；
+   - 统计。
+3. 使用 `GM_getValue` 和 `GM_setValue` 保存 likes、bookmarks、follows。
+4. 捕获用户真实点击：
+   - like 写入 `likes`；
+   - bookmark 写入 `bookmarks`；
+   - follow 写入 `follows`；
+   - unlike、remove bookmark、unfollow 删除对应记录。
+5. 统计窗口展示点赞、书签和关注三个可点击分类，不显示本地记录总计。
+6. 点击分类后展示详情表格，包括账号、链接、记录类型、保存时间和来源。
+7. 详情链接可在新标签页安全打开。
+8. 统计窗口支持关闭按钮、点击遮罩关闭和 Escape 键关闭。
+
+## 已删除功能
+
+- 保存当前用户主页；
+- 保存当前推文详情页；
+- 扫描可见链接；
+- profiles 普通备份；
+- tweets 普通备份；
+- URL 备份统计和本地记录总计。
 
 ## 非目标功能
 
-以下功能不属于本 MVP：
-
 - 自动关注、自动点赞或自动收藏；
 - 自动点击、恢复、重放或撤销用户行为；
-- 读取或修改点赞、收藏状态；
 - 调用 X / Twitter 内部 API；
 - 无限滚动、自动加载更多内容或高频抓取；
 - GitHub、云端或其他远程同步；
-- JSON 导入、Markdown 导出和复杂的数据管理界面。
-
-## 安全限制
-
-- 只允许使用当前页面 URL 和当前 DOM 中可见的 `a[href]` 进行识别。
-- 不依赖 X 页面内部 CSS class 名。
-- 不发起用于收集数据的网络请求，不向第三方发送本地记录。
-- 不保存 token、账号、密码、Cookie 或其他凭据。
-- 所有账号操作均由用户在 X 页面中自行完成；脚本不代替用户执行操作。
-- 扫描动作必须由用户点击触发，且不得通过滚动扩大扫描范围。
-- 行为捕获只能监听用户真实产生的 click 事件，不得主动触发 X 页面按钮。
-- 不调用 X 内部 API 查询交互状态。
-- 同一次交互 URL 只在对应交互集合中保存一份，不额外复制到 tweets 或 profiles。
-- 取消点赞、取消收藏或取消关注时，删除对应 likes、bookmarks 或 follows 记录。
-- 取消交互不得删除用户通过保存当前页或扫描可见链接得到的 tweets/profiles 记录。
+- 账号凭据、Cookie 或 token 存储。
 
 ## 用户交互识别
 
-- 使用捕获阶段事件委托：
-  `document.addEventListener('click', handleDocumentClick, true)`。
-- 只处理用户点击路径中最近的 `button` 或 `div[role="button"]`。
-- 动作识别只参考按钮的 `data-testid`、`aria-label` 和 `innerText`。
-- `unlike` 删除对应 like，`removeBookmark` / `remove-bookmark` 删除对应 bookmark，
-  `unfollow` 删除对应 follow。
-- 点赞和书签优先从最近的 `article` 中读取 `/status/` 链接；详情页可回退到当前 URL。
-- 关注优先从最近的 `[data-testid="UserCell"]` 读取主页链接，再检查附近 article
-  或父元素；用户主页可回退到当前 URL。
-- 无法找到相应 tweet/profile record 时不写入任何行为数据。
+- 使用 `document.addEventListener('click', handleDocumentClick, true)`。
+- 只处理最近的 `button` 或 `div[role="button"]`。
+- 动作识别只参考 `data-testid`、`aria-label` 和 `innerText`。
+- like/bookmark 从最近 `article` 中寻找 `/status/` 链接，详情页可回退当前 URL。
+- follow 优先从最近 `[data-testid="UserCell"]` 寻找主页链接，再检查附近 article
+  或父元素，用户主页可回退当前 URL。
+- 无法识别对应记录时不写入数据。
 
 ## URL 识别规则
 
-### 规范化
+- 只接受 HTTPS `x.com` 和 `twitter.com`。
+- `twitter.com` 统一为 `x.com`。
+- 删除 query、hash 和非根路径末尾斜杠。
+- 推文：`https://x.com/{handle}/status/{tweetId}`。
+- 主页：`https://x.com/{handle}`。
+- handle 为 1–15 位字母、数字或下划线，并过滤系统路径。
+- tweetId 只允许数字。
 
-`normalizeUrl(url)` 应：
-
-1. 只接受 `https://x.com` 或 `https://twitter.com` URL；
-2. 将主机名 `twitter.com` 统一转换为 `x.com`；
-3. 删除 query string；
-4. 删除 hash；
-5. 删除末尾多余斜杠，但保留根路径 `/`。
-
-### 推文 URL
-
-- 格式：`https://x.com/{handle}/status/{tweetId}`
-- `tweetId` 必须仅包含数字。
-
-### 用户主页 URL
-
-- 格式：`https://x.com/{handle}`
-- 必须只有一个路径段。
-
-### Handle
-
-- 长度为 1 到 15 位；
-- 只允许字母、数字和下划线；
-- 匹配时不区分系统路径的大小写。
-
-以下系统路径不能被识别为用户主页：
-
-- `home`
-- `explore`
-- `notifications`
-- `messages`
-- `settings`
-- `i`
-- `compose`
-- `search`
-- `jobs`
-- `premium`
-- `verified-orgs`
-- `grok`
-
-系统路径也不能作为推文 URL 中的 handle。
+URL 识别只用于确定交互所对应的账号或推文，不用于普通 URL 扫描和备份。
 
 ## 本地存储规则
 
-- 使用一个固定 Tampermonkey 存储键保存版本化根对象。
-- 根对象包含 `version`、`profiles`、`tweets`、`likes`、`bookmarks`、`follows`
-  和 `updatedAt`。
-- 所有记录集合都是以规范化 URL 为 key 的对象。
-- 每条记录包含规范化 URL、类型、handle、保存时间及来源。
-- 推文记录还包含 `tweetId`。
-- 新记录的 `savedAt` 使用带 `+08:00` 偏移的 ISO 8601 东八区时间。
-- 只有新增记录时才更新根对象的 `updatedAt`；重复 URL 不重复写入。
-- 数据损坏或结构不兼容时，脚本应安全回退为空的 version 1 数据，不执行远程恢复。
-- 旧 version 1 数据缺少 likes、bookmarks 或 follows 时，加载后自动补为空对象，
-  并保留已有 profiles 和 tweets。
-- 加载旧版冗余交互数据时，如果 tweets/profiles 中同 URL 的记录来源为 `user-click`
-  且已经存在于对应交互集合，则移除该冗余副本；手动保存或扫描记录不受影响。
-- JSON 导出文件名为 `recallx-backup-YYYY-MM-DD.json`。
+- 根对象使用 version 2，只包含 `likes`、`bookmarks`、`follows`、`updatedAt`。
+- 每个集合以规范化 URL 为 key 去重。
+- likes/bookmarks 保存 tweet record；follows 保存 profile record。
+- `savedAt` 和 `updatedAt` 使用带 `+08:00` 偏移的东八区 ISO 8601 时间。
+- 重复交互不覆盖首次保存信息。
+- 取消操作删除对应集合中的记录并更新 `updatedAt`。
+- 读取旧 version 1 数据时，只迁移 likes、bookmarks、follows；丢弃 profiles/tweets。
+- JSON 文件名为 `recallx-backup-YYYY-MM-DD.json`。
+
+## 统计详情要求
+
+- 三个分类卡片必须有明确标签、数量、说明和“查看详情”提示。
+- 表格按 `savedAt` 从新到旧排列。
+- 表格必须处理空状态和长 URL。
+- 所有从存储读取并插入 HTML 的字段必须转义。
+- 外部链接使用 `target="_blank"` 和 `rel="noopener noreferrer"`。
+- 窄屏下允许表格横向滚动，不得撑破视口。

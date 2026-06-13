@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.3.0
-// @description  Locally back up visible X URLs and user-triggered interactions.
+// @version      0.4.0
+// @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @grant        GM_getValue
@@ -46,9 +46,7 @@
 
   function emptyData() {
     return {
-      version: 1,
-      profiles: {},
-      tweets: {},
+      version: 2,
       likes: {},
       bookmarks: {},
       follows: {},
@@ -57,43 +55,21 @@
   }
 
   function ensureDataShape(data) {
-    const shaped = data && typeof data === 'object' ? data : {};
-    const collectionNames = [
-      'profiles',
-      'tweets',
-      'likes',
-      'bookmarks',
-      'follows',
-    ];
+    const stored = data && typeof data === 'object' ? data : {};
+    const shaped = emptyData();
+    const collectionNames = ['likes', 'bookmarks', 'follows'];
 
-    shaped.version = 1;
     for (const name of collectionNames) {
       if (
-        !shaped[name] ||
-        typeof shaped[name] !== 'object' ||
-        Array.isArray(shaped[name])
+        stored[name] &&
+        typeof stored[name] === 'object' &&
+        !Array.isArray(stored[name])
       ) {
-        shaped[name] = {};
+        shaped[name] = stored[name];
       }
     }
     shaped.updatedAt =
-      typeof shaped.updatedAt === 'string' ? shaped.updatedAt : '';
-
-    // Remove interaction-created duplicates from data written by version 0.2.0.
-    // Explicitly saved/scanned profile and tweet records remain untouched.
-    for (const url of new Set([
-      ...Object.keys(shaped.likes),
-      ...Object.keys(shaped.bookmarks),
-    ])) {
-      if (shaped.tweets[url]?.source === 'user-click') {
-        delete shaped.tweets[url];
-      }
-    }
-    for (const url of Object.keys(shaped.follows)) {
-      if (shaped.profiles[url]?.source === 'user-click') {
-        delete shaped.profiles[url];
-      }
-    }
+      typeof stored.updatedAt === 'string' ? stored.updatedAt : '';
 
     return shaped;
   }
@@ -173,29 +149,6 @@
     }
 
     return null;
-  }
-
-  function saveRecord(record, source) {
-    if (!record || (record.type !== 'profile' && record.type !== 'tweet')) {
-      return false;
-    }
-
-    const data = loadData();
-    const collection = record.type === 'tweet' ? data.tweets : data.profiles;
-
-    if (collection[record.url]) {
-      return false;
-    }
-
-    const savedAt = now();
-    collection[record.url] = {
-      ...record,
-      savedAt,
-      source,
-    };
-    data.updatedAt = savedAt;
-    saveData(data);
-    return true;
   }
 
   function saveTweetInteraction(tweetRecord, interactionType, source) {
@@ -308,65 +261,6 @@
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#039;');
-  }
-
-  function saveCurrentPage() {
-    const record = parseXUrl(window.location.href);
-
-    if (!record) {
-      setStatus('当前页面不是可识别的用户主页或推文页');
-      return;
-    }
-
-    const added = saveRecord(record, 'current-page');
-    setStatus(added ? `已保存 ${record.type}` : '该 URL 已保存');
-  }
-
-  function isVisibleLink(link) {
-    if (!link.isConnected || link.getClientRects().length === 0) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(link);
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      Number.parseFloat(style.opacity) === 0
-    ) {
-      return false;
-    }
-
-    const rect = link.getBoundingClientRect();
-    return (
-      rect.bottom > 0 &&
-      rect.right > 0 &&
-      rect.top < window.innerHeight &&
-      rect.left < window.innerWidth
-    );
-  }
-
-  function scanVisibleLinks() {
-    const uniqueRecords = new Map();
-
-    for (const link of document.querySelectorAll('a[href]')) {
-      if (!isVisibleLink(link)) {
-        continue;
-      }
-
-      const record = parseXUrl(link.href);
-      if (record) {
-        uniqueRecords.set(record.url, record);
-      }
-    }
-
-    let addedCount = 0;
-    for (const record of uniqueRecords.values()) {
-      if (saveRecord(record, 'visible-link')) {
-        addedCount += 1;
-      }
-    }
-
-    setStatus(`识别 ${uniqueRecords.size} 条，新增 ${addedCount} 条`);
   }
 
   function detectActionFromButton(button) {
@@ -552,59 +446,42 @@
   function showStats() {
     const data = loadData();
     const counts = {
-      profiles: Object.keys(data.profiles).length,
-      tweets: Object.keys(data.tweets).length,
       likes: Object.keys(data.likes).length,
       bookmarks: Object.keys(data.bookmarks).length,
       follows: Object.keys(data.follows).length,
     };
-    const urlBackupTotal = counts.profiles + counts.tweets;
-    const interactionTotal = counts.likes + counts.bookmarks + counts.follows;
-    const total = urlBackupTotal + interactionTotal;
 
     if (!statsModalElement || !statsContentElement) {
-      setStatus(`共 ${total} 条本地记录`);
+      setStatus('统计窗口暂不可用');
       return;
     }
 
-    const statCard = (label, count, tone) => `
-      <div class="stat-card stat-card--${tone}">
+    const statCard = (collection, label, description, count, tone) => `
+      <button
+        class="stat-card stat-card--${tone}"
+        type="button"
+        data-stats-collection="${collection}"
+        aria-label="查看${label}记录，共 ${count} 条"
+      >
         <span class="stat-card__label">${label}</span>
         <strong class="stat-card__value">${count}</strong>
-      </div>
+        <span class="stat-card__description">${description}</span>
+        <span class="stat-card__action">查看详情 →</span>
+      </button>
     `;
 
     statsContentElement.innerHTML = `
-      <div class="stats-summary">
-        <span class="stats-summary__label">本地记录总计</span>
-        <strong class="stats-summary__value">${total}</strong>
-        <span class="stats-summary__hint">全部数据仅保存在 Tampermonkey 本地存储</span>
-      </div>
-      <section class="stats-section" aria-labelledby="recallx-url-stats-title">
-        <div class="stats-section__heading">
-          <div>
-            <h3 id="recallx-url-stats-title">URL 备份</h3>
-            <p>手动保存或扫描得到的独立链接</p>
-          </div>
-          <span class="stats-section__total">${urlBackupTotal} 条</span>
-        </div>
-        <div class="stats-grid">
-          ${statCard('用户主页', counts.profiles, 'profile')}
-          ${statCard('推文', counts.tweets, 'tweet')}
-        </div>
-      </section>
       <section class="stats-section" aria-labelledby="recallx-action-stats-title">
         <div class="stats-section__heading">
           <div>
-            <h3 id="recallx-action-stats-title">交互记录</h3>
-            <p>由用户真实点击捕获，可随取消操作移除</p>
+            <h3 id="recallx-action-stats-title">账号交互记录</h3>
+            <p>点击任一分类，查看对应账号、链接和保存信息</p>
           </div>
-          <span class="stats-section__total">${interactionTotal} 条</span>
         </div>
         <div class="stats-grid stats-grid--three">
-          ${statCard('点赞', counts.likes, 'like')}
-          ${statCard('书签', counts.bookmarks, 'bookmark')}
-          ${statCard('关注', counts.follows, 'follow')}
+          ${statCard('likes', '点赞', '已记录的推文点赞', counts.likes, 'like')}
+          ${statCard('bookmarks', '书签', '已记录的推文书签', counts.bookmarks, 'bookmark')}
+          ${statCard('follows', '关注', '已记录的关注账号', counts.follows, 'follow')}
         </div>
       </section>
       <dl class="stats-meta">
@@ -616,11 +493,97 @@
           <dt>数据版本</dt>
           <dd>Version ${data.version}</dd>
         </div>
+        <div>
+          <dt>存储位置</dt>
+          <dd>Tampermonkey 本地存储</dd>
+        </div>
       </dl>
     `;
 
     statsModalElement.hidden = false;
     statsCloseButton?.focus();
+  }
+
+  function showStatsDetails(collectionName) {
+    const collectionMeta = {
+      likes: { label: '点赞', recordLabel: '推文' },
+      bookmarks: { label: '书签', recordLabel: '推文' },
+      follows: { label: '关注', recordLabel: '账号' },
+    };
+    const meta = collectionMeta[collectionName];
+    if (!meta || !statsContentElement) {
+      return;
+    }
+
+    const data = loadData();
+    const records = Object.values(data[collectionName]).sort((a, b) =>
+      String(b.savedAt || '').localeCompare(String(a.savedAt || '')),
+    );
+    const rows = records
+      .map((record, index) => {
+        const handle = record.handle ? `@${record.handle}` : '未知账号';
+        const safeUrl = normalizeUrl(record.url) || '';
+        const linkMarkup = safeUrl
+          ? `
+              <a
+                class="detail-link"
+                href="${escapeHtml(safeUrl)}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >${escapeHtml(safeUrl)}</a>
+            `
+          : '<span class="detail-kind">无有效链接</span>';
+        return `
+          <tr>
+            <td class="detail-index">${index + 1}</td>
+            <td>
+              <strong class="detail-handle">${escapeHtml(handle)}</strong>
+              <span class="detail-kind">${meta.recordLabel}</span>
+            </td>
+            <td>
+              ${linkMarkup}
+            </td>
+            <td>${escapeHtml(record.savedAt || '未知')}</td>
+            <td>${escapeHtml(record.source || '未知')}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    statsContentElement.innerHTML = `
+      <div class="detail-toolbar">
+        <button class="detail-back" type="button" data-stats-back>
+          ← 返回统计
+        </button>
+        <span>${meta.label} · ${records.length} 条</span>
+      </div>
+      ${
+        records.length
+          ? `
+            <div class="detail-table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">账号</th>
+                    <th scope="col">链接</th>
+                    <th scope="col">保存时间</th>
+                    <th scope="col">来源</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          `
+          : `
+            <div class="detail-empty">
+              <strong>暂无${meta.label}记录</strong>
+              <span>在 X 页面手动执行${meta.label}操作后，记录会显示在这里。</span>
+            </div>
+          `
+      }
+    `;
+    statsContentElement.querySelector('[data-stats-back]')?.focus();
   }
 
   function closeStats() {
@@ -757,32 +720,6 @@
         gap: 16px;
         padding: 18px 22px 22px;
       }
-      .stats-summary {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 2px 16px;
-        align-items: center;
-        padding: 16px 18px;
-        border: 1px solid #075985;
-        border-radius: 14px;
-        background: linear-gradient(135deg, rgb(14 116 144 / 25%), rgb(30 41 59 / 55%));
-      }
-      .stats-summary__label {
-        color: #bae6fd;
-        font-size: 13px;
-        font-weight: 650;
-      }
-      .stats-summary__value {
-        grid-row: 1 / 3;
-        grid-column: 2;
-        color: #f8fafc;
-        font-size: 34px;
-        line-height: 1;
-      }
-      .stats-summary__hint {
-        color: #94a3b8;
-        font-size: 11px;
-      }
       .stats-section {
         padding: 15px;
         border: 1px solid #273449;
@@ -805,18 +742,8 @@
         color: #64748b;
         font-size: 11px;
       }
-      .stats-section__total {
-        flex: none;
-        padding: 3px 8px;
-        border-radius: 999px;
-        color: #cbd5e1;
-        background: #1e293b;
-        font-size: 11px;
-        font-weight: 650;
-      }
       .stats-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 9px;
       }
       .stats-grid--three {
@@ -829,6 +756,12 @@
         border: 1px solid #334155;
         border-radius: 11px;
         background: #0b1324;
+        text-align: left;
+        transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+      }
+      .stat-card:hover {
+        background: #162238;
+        transform: translateY(-1px);
       }
       .stat-card__label {
         color: #94a3b8;
@@ -839,8 +772,15 @@
         font-size: 24px;
         line-height: 1;
       }
-      .stat-card--profile { border-top-color: #22d3ee; }
-      .stat-card--tweet { border-top-color: #60a5fa; }
+      .stat-card__description {
+        color: #64748b;
+        font-size: 10px;
+      }
+      .stat-card__action {
+        color: #bae6fd;
+        font-size: 10px;
+        font-weight: 650;
+      }
       .stat-card--like { border-top-color: #fb7185; }
       .stat-card--bookmark { border-top-color: #c084fc; }
       .stat-card--follow { border-top-color: #4ade80; }
@@ -866,6 +806,88 @@
         overflow-wrap: anywhere;
         text-align: right;
       }
+      .detail-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: #94a3b8;
+        font-size: 12px;
+      }
+      .detail-back {
+        min-height: 32px;
+        padding: 5px 10px;
+      }
+      .detail-table-wrap {
+        overflow-x: auto;
+        border: 1px solid #273449;
+        border-radius: 12px;
+      }
+      .detail-table {
+        width: 100%;
+        min-width: 760px;
+        border-collapse: collapse;
+        background: #0b1324;
+        font-size: 11px;
+      }
+      .detail-table th,
+      .detail-table td {
+        padding: 11px 12px;
+        border-bottom: 1px solid #1e293b;
+        text-align: left;
+        vertical-align: top;
+      }
+      .detail-table th {
+        color: #94a3b8;
+        background: #111c2f;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .detail-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .detail-table tbody tr:hover {
+        background: #111c2f;
+      }
+      .detail-index,
+      .detail-kind {
+        color: #64748b;
+      }
+      .detail-handle,
+      .detail-kind {
+        display: block;
+      }
+      .detail-handle {
+        margin-bottom: 3px;
+        color: #f1f5f9;
+      }
+      .detail-link {
+        display: block;
+        max-width: 300px;
+        color: #7dd3fc;
+        overflow: hidden;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .detail-link:hover {
+        text-decoration: underline;
+      }
+      .detail-empty {
+        display: grid;
+        gap: 6px;
+        justify-items: center;
+        padding: 42px 20px;
+        border: 1px dashed #334155;
+        border-radius: 12px;
+        color: #64748b;
+        text-align: center;
+      }
+      .detail-empty strong {
+        color: #cbd5e1;
+        font-size: 14px;
+      }
       @media (max-width: 480px) {
         .stats-grid--three {
           grid-template-columns: 1fr;
@@ -880,7 +902,7 @@
 
     const panel = document.createElement('section');
     panel.className = 'panel';
-    panel.setAttribute('aria-label', 'RECALLX URL backup');
+    panel.setAttribute('aria-label', 'RECALLX interaction backup');
 
     const title = document.createElement('h2');
     title.textContent = 'RECALLX';
@@ -888,8 +910,6 @@
     const buttons = document.createElement('div');
     buttons.className = 'buttons';
     const actions = [
-      ['保存当前页', saveCurrentPage],
-      ['扫描可见链接', scanVisibleLinks],
       ['导出 JSON', exportJson],
       ['统计', showStats],
     ];
@@ -923,7 +943,7 @@
         <header class="stats-dialog__header">
           <div>
             <span class="stats-dialog__eyebrow">RECALLX LOCAL DATA</span>
-            <h2 id="recallx-stats-title">备份统计</h2>
+            <h2 id="recallx-stats-title">账号交互统计</h2>
           </div>
           <button class="stats-close" type="button" aria-label="关闭统计窗口">×</button>
         </header>
@@ -933,6 +953,16 @@
     statsContentElement = statsModalElement.querySelector(
       '.stats-dialog__body',
     );
+    statsContentElement.addEventListener('click', (event) => {
+      const collectionButton = event.target.closest('[data-stats-collection]');
+      if (collectionButton) {
+        showStatsDetails(collectionButton.dataset.statsCollection);
+        return;
+      }
+      if (event.target.closest('[data-stats-back]')) {
+        showStats();
+      }
+    });
     statsCloseButton = statsModalElement.querySelector('.stats-close');
     statsCloseButton.addEventListener('click', closeStats);
     statsModalElement.addEventListener('click', (event) => {
