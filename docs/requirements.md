@@ -52,8 +52,13 @@
 - 只处理最近的 `button` 或 `div[role="button"]`。
 - 动作识别只参考 `data-testid`、`aria-label` 和 `innerText`。
 - like/bookmark 从最近 `article` 中寻找 `/status/` 链接，详情页可回退当前 URL。
-- follow 优先从最近 `[data-testid="UserCell"]` 寻找主页链接，再检查附近 article
-  或父元素，用户主页可回退当前 URL。
+- follow/unfollow 只允许从被点击按钮最近的单一 `[data-testid="UserCell"]`
+  寻找唯一主页链接。
+- 如果按钮不在 UserCell 中，仅当当前 URL 是用户主页且按钮位于 `main` 主内容区时，
+  才使用当前主页 URL。
+- `aside`、`[role="complementary"]` 及可稳定识别的 sidebar / Who to follow /
+  推荐关注区域中的 follow/unfollow 一律忽略。
+- 禁止从 article、parentElement、大容器或页面其他 UserCell 宽泛查找点击对象。
 - 无法识别对应记录时不写入数据。
 
 ## URL 识别规则

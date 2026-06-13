@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RECALLX
 // @namespace    local.recallx
-// @version      0.5.0
+// @version      0.5.1
 // @description  Locally back up user-triggered X likes, bookmarks, and follows.
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -328,37 +328,73 @@
       : null;
   }
 
-  function findProfileRecordInContainer(container) {
-    if (!container) {
+  function isInSidebar(element) {
+    if (
+      !element ||
+      element.closest('aside') ||
+      element.closest('[role="complementary"]')
+    ) {
+      return Boolean(element);
+    }
+
+    for (let node = element; node && node !== document.body; node = node.parentElement) {
+      if (node.matches('main')) {
+        return false;
+      }
+
+      const regionLabel = [
+        node.getAttribute('aria-label') || '',
+        node.getAttribute('data-testid') || '',
+        node.getAttribute('role') || '',
+      ].join(' ');
+      if (
+        /sidebar|side.?bar|who to follow|recommended|recommendation|推荐关注|推荐用户|你可能喜欢/i.test(
+          regionLabel,
+        )
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function findProfileRecordInSingleUserCell(userCell) {
+    if (!userCell) {
       return null;
     }
 
-    for (const link of container.querySelectorAll('a[href]')) {
+    const ownHandle = detectAccountHandle();
+    const candidates = new Map();
+    for (const link of userCell.querySelectorAll('a[href]')) {
       const record = parseXUrl(link.href);
-      if (record && record.type === 'profile') {
-        return record;
+      if (
+        record?.type === 'profile' &&
+        record.handle.toLowerCase() !== ownHandle?.toLowerCase()
+      ) {
+        candidates.set(record.url, record);
       }
     }
 
-    return null;
+    return candidates.size === 1 ? candidates.values().next().value : null;
   }
 
   function findProfileRecordNearElement(element) {
-    const userCell = element.closest('[data-testid="UserCell"]');
-    const article = element.closest('article');
-    const nearbyContainers = [userCell, article, element.parentElement];
+    if (isInSidebar(element)) {
+      return null;
+    }
 
-    for (const container of nearbyContainers) {
-      const record = findProfileRecordInContainer(container);
-      if (record) {
-        return record;
-      }
+    const userCell = element.closest('[data-testid="UserCell"]');
+    if (userCell) {
+      return findProfileRecordInSingleUserCell(userCell);
     }
 
     const currentRecord = parseXUrl(window.location.href);
-    return currentRecord && currentRecord.type === 'profile'
-      ? currentRecord
-      : null;
+    if (currentRecord?.type === 'profile' && element.closest('main')) {
+      return currentRecord;
+    }
+
+    return null;
   }
 
   function handleDocumentClick(event) {
@@ -397,8 +433,14 @@
       return;
     }
 
+    if (isInSidebar(button)) {
+      console.info('[RECALLX] ignored follow in sidebar');
+      return;
+    }
+
     const profileRecord = findProfileRecordNearElement(button);
     if (!profileRecord) {
+      console.info('[RECALLX] ignored follow: no unique profile found');
       return;
     }
 
